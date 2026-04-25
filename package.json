@@ -1,0 +1,50 @@
+{
+  "name": "dbzod",
+  "version": "0.0.0",
+  "description": "Generate Zod schemas and JSDoc typedefs from a PostgreSQL database.",
+  "type": "module",
+  "files": [
+    "dbzod.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "dbzod": "dbzod.js"
+  },
+  "scripts": {
+    "start": "node ./dbzod.js",
+    "check": "node --check ./dbzod.js",
+    "prepack": "npm run check"
+  },
+  "keywords": [
+    "postgres",
+    "postgresql",
+    "zod",
+    "schema",
+    "validation",
+    "cli",
+    "jsdoc",
+    "database"
+  ],
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "peerDependencies": {
+    "zod": "^3.23.8 || ^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "zod": "^4.3.6"
+  }
+}
