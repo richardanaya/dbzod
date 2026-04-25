@@ -197,11 +197,17 @@ async function introspectPostgres(connectionString, schemaName) {
           c.data_type,
           c.udt_schema,
           c.udt_name,
+          c.domain_schema,
+          c.domain_name,
           c.character_maximum_length,
           c.numeric_precision,
           c.numeric_scale,
           c.datetime_precision,
           c.column_default,
+          c.is_identity,
+          c.identity_generation,
+          c.is_generated,
+          c.generation_expression,
           obj_description(cls.oid, 'pg_class') as table_description,
           col_description(cls.oid, att.attnum) as column_description,
           exists (
@@ -240,10 +246,14 @@ async function introspectPostgres(connectionString, schemaName) {
 
     const enumLabelsByType = await loadEnumLabels(client);
     const checkConstraints = await loadCheckConstraints(client, schemaName);
+    const tableConstraints = await loadTableConstraints(client, schemaName);
+    const domainConstraints = await loadDomainConstraints(client);
     const tables = groupColumnsByTable(result.rows);
 
     applyEnumLabels(tables, enumLabelsByType);
     applyCheckConstraints(tables, checkConstraints);
+    applyDomainConstraints(tables, domainConstraints);
+    applyTableConstraints(tables, tableConstraints);
 
     return tables;
   } finally {
@@ -283,6 +293,7 @@ async function loadCheckConstraints(client, schemaName) {
         cls.relname as table_name,
         con.conname as constraint_name,
         pg_get_constraintdef(con.oid, true) as constraint_definition,
+        obj_description(con.oid, 'pg_constraint') as constraint_description,
         coalesce(
           json_agg(att.attname order by att.attnum) filter (where att.attname is not null),
           '[]'::json
@@ -303,6 +314,83 @@ async function loadCheckConstraints(client, schemaName) {
   );
 
   return result.rows;
+}
+
+async function loadTableConstraints(client, schemaName) {
+  const result = await client.query(
+    `
+      select
+        cls.relname as table_name,
+        con.conname as constraint_name,
+        con.contype as constraint_type,
+        pg_get_constraintdef(con.oid, true) as constraint_definition,
+        obj_description(con.oid, 'pg_constraint') as constraint_description,
+        coalesce(
+          json_agg(att.attname order by ck.ord) filter (where att.attname is not null),
+          '[]'::json
+        ) as column_names,
+        fns.nspname as foreign_schema,
+        fcls.relname as foreign_table,
+        coalesce(
+          json_agg(fatt.attname order by fk.ord) filter (where fatt.attname is not null),
+          '[]'::json
+        ) as foreign_column_names
+      from pg_constraint con
+      join pg_class cls on cls.oid = con.conrelid
+      join pg_namespace ns on ns.oid = cls.relnamespace
+      left join unnest(con.conkey) with ordinality as ck(attnum, ord) on true
+      left join pg_attribute att
+        on att.attrelid = cls.oid
+        and att.attnum = ck.attnum
+      left join pg_class fcls on fcls.oid = con.confrelid
+      left join pg_namespace fns on fns.oid = fcls.relnamespace
+      left join unnest(con.confkey) with ordinality as fk(attnum, ord) on fk.ord = ck.ord
+      left join pg_attribute fatt
+        on fatt.attrelid = fcls.oid
+        and fatt.attnum = fk.attnum
+      where con.contype in ('p', 'u', 'f', 'x')
+        and ns.nspname = $1
+      group by cls.relname, con.conname, con.contype, con.oid, fns.nspname, fcls.relname
+      order by cls.relname, con.conname
+    `,
+    [schemaName],
+  );
+
+  return result.rows;
+}
+
+async function loadDomainConstraints(client) {
+  const result = await client.query(
+    `
+      select
+        ns.nspname as domain_schema,
+        typ.typname as domain_name,
+        con.conname as constraint_name,
+        pg_get_constraintdef(con.oid, true) as constraint_definition,
+        obj_description(con.oid, 'pg_constraint') as constraint_description
+      from pg_type typ
+      join pg_namespace ns on ns.oid = typ.typnamespace
+      join pg_constraint con on con.contypid = typ.oid
+      where typ.typtype = 'd'
+        and con.contype = 'c'
+        and ns.nspname not in ('pg_catalog', 'information_schema')
+      order by ns.nspname, typ.typname, con.conname
+    `,
+  );
+
+  const constraintsByDomain = new Map();
+
+  for (const row of result.rows) {
+    const key = `${row.domain_schema}.${row.domain_name}`;
+
+    if (!constraintsByDomain.has(key)) {
+      constraintsByDomain.set(key, []);
+    }
+
+    constraintsByDomain.get(key).push(row);
+  }
+
+  return constraintsByDomain;
 }
 
 async function listPostgresTables(connectionString, schemaName) {
@@ -336,6 +424,11 @@ function groupColumnsByTable(rows) {
       tableMap.set(row.table_name, {
         name: row.table_name,
         description: row.table_description,
+        primaryKey: [],
+        uniqueConstraints: [],
+        foreignKeys: [],
+        exclusionConstraints: [],
+        constraints: [],
         columns: [],
       });
     }
@@ -346,14 +439,21 @@ function groupColumnsByTable(rows) {
       dataType: row.data_type,
       udtSchema: row.udt_schema,
       udtName: row.udt_name,
+      domainSchema: row.domain_schema,
+      domainName: row.domain_name,
       characterMaximumLength: toNullableNumber(row.character_maximum_length),
       numericPrecision: toNullableNumber(row.numeric_precision),
       numericScale: toNullableNumber(row.numeric_scale),
       datetimePrecision: toNullableNumber(row.datetime_precision),
       defaultValue: row.column_default,
+      isIdentity: row.is_identity === "YES",
+      identityGeneration: row.identity_generation,
+      isGenerated: row.is_generated === "ALWAYS",
+      generationExpression: row.generation_expression,
       isPrimaryKey: row.is_primary_key,
       description: row.column_description,
       enumLabels: null,
+      domainConstraints: [],
       checkConstraints: [],
     });
   }
@@ -397,8 +497,74 @@ function applyCheckConstraints(tables, checkConstraints) {
     column.checkConstraints.push({
       name: constraint.constraint_name,
       definition: constraint.constraint_definition,
+      description: constraint.constraint_description,
       parsed: parseColumnCheckConstraint(constraint.constraint_definition, columnName),
     });
+  }
+}
+
+function applyDomainConstraints(tables, domainConstraints) {
+  for (const table of tables) {
+    for (const column of table.columns) {
+      if (!column.domainSchema || !column.domainName) {
+        continue;
+      }
+
+      const constraints = domainConstraints.get(`${column.domainSchema}.${column.domainName}`) ?? [];
+
+      for (const constraint of constraints) {
+        const parsed = parseColumnCheckConstraint(constraint.constraint_definition, "VALUE");
+
+        column.domainConstraints.push({
+          name: constraint.constraint_name,
+          definition: constraint.constraint_definition,
+          description: constraint.constraint_description,
+          parsed,
+        });
+        column.checkConstraints.push({
+          name: constraint.constraint_name,
+          definition: constraint.constraint_definition,
+          description: constraint.constraint_description,
+          parsed,
+        });
+      }
+    }
+  }
+}
+
+function applyTableConstraints(tables, constraints) {
+  const tablesByName = new Map(tables.map((table) => [table.name, table]));
+
+  for (const constraint of constraints) {
+    const table = tablesByName.get(constraint.table_name);
+
+    if (!table) {
+      continue;
+    }
+
+    const metadata = {
+      name: constraint.constraint_name,
+      columns: constraint.column_names,
+      definition: constraint.constraint_definition,
+      description: constraint.constraint_description,
+    };
+
+    table.constraints.push({ ...metadata, type: constraint.constraint_type });
+
+    if (constraint.constraint_type === "p") {
+      table.primaryKey = constraint.column_names;
+    } else if (constraint.constraint_type === "u") {
+      table.uniqueConstraints.push(metadata);
+    } else if (constraint.constraint_type === "f") {
+      table.foreignKeys.push({
+        ...metadata,
+        foreignSchema: constraint.foreign_schema,
+        foreignTable: constraint.foreign_table,
+        foreignColumns: constraint.foreign_column_names,
+      });
+    } else if (constraint.constraint_type === "x") {
+      table.exclusionConstraints.push(metadata);
+    }
   }
 }
 
@@ -422,7 +588,11 @@ function generateSchemas(tables, schemaName) {
 
   for (const table of tables) {
     const typeName = toPascalCase(table.name);
-    const schemaNameForTable = `${toCamelCase(table.name)}Schema`;
+    const tableName = toCamelCase(table.name);
+    const rowSchemaName = `${tableName}RowSchema`;
+    const insertSchemaName = `${tableName}InsertSchema`;
+    const updateSchemaName = `${tableName}UpdateSchema`;
+    const schemaNameForTable = `${tableName}Schema`;
 
     lines.push(`/**`);
     for (const descriptionLine of toJsDocDescriptionLines(table.description)) {
@@ -436,13 +606,28 @@ function generateSchemas(tables, schemaName) {
     }
 
     lines.push(` */`);
-    lines.push(`export const ${schemaNameForTable} = z.object({`);
+    lines.push(`export const ${rowSchemaName} = z.object({`);
 
     for (const column of table.columns) {
       lines.push(`  ${quotePropertyName(column.name)}: ${toZodExpression(column)},`);
     }
 
     lines.push(`})${toZodDescription(table.description)};`);
+    lines.push(`export const ${schemaNameForTable} = ${rowSchemaName};`);
+    lines.push(`export const ${insertSchemaName} = z.object({`);
+
+    for (const column of table.columns.filter(isInsertableColumn)) {
+      lines.push(`  ${quotePropertyName(column.name)}: ${toInsertZodExpression(column)},`);
+    }
+
+    lines.push(`})${toZodDescription(insertDescription(table))};`);
+    lines.push(`export const ${updateSchemaName} = z.object({`);
+
+    for (const column of table.columns.filter(isUpdatableColumn)) {
+      lines.push(`  ${quotePropertyName(column.name)}: ${toOptionalZodExpression(column)},`);
+    }
+
+    lines.push(`})${toZodDescription(updateDescription(table))};`);
     lines.push("");
   }
 
@@ -454,13 +639,110 @@ function generateSchemas(tables, schemaName) {
 
   lines.push("};");
   lines.push("");
+  lines.push("export const rowSchemas = {");
+
+  for (const table of tables) {
+    lines.push(`  ${quotePropertyName(table.name)}: ${toCamelCase(table.name)}RowSchema,`);
+  }
+
+  lines.push("};");
+  lines.push("");
+  lines.push("export const insertSchemas = {");
+
+  for (const table of tables) {
+    lines.push(`  ${quotePropertyName(table.name)}: ${toCamelCase(table.name)}InsertSchema,`);
+  }
+
+  lines.push("};");
+  lines.push("");
+  lines.push("export const updateSchemas = {");
+
+  for (const table of tables) {
+    lines.push(`  ${quotePropertyName(table.name)}: ${toCamelCase(table.name)}UpdateSchema,`);
+  }
+
+  lines.push("};");
+  lines.push("");
+  lines.push(`export const metadata = ${JSON.stringify(buildMetadata(tables), null, 2)};`);
+  lines.push("");
 
   return `${lines.join("\n")}\n`;
 }
 
+function toInsertZodExpression(column) {
+  if (column.nullable || hasServerDefault(column)) {
+    return toOptionalZodExpression(column);
+  }
+
+  return toZodExpression(column);
+}
+
+function toOptionalZodExpression(column) {
+  return `${toZodExpression(column)}.optional()`;
+}
+
+function isInsertableColumn(column) {
+  return !column.isGenerated && column.identityGeneration !== "ALWAYS";
+}
+
+function isUpdatableColumn(column) {
+  return !column.isGenerated && !column.isIdentity && !column.isPrimaryKey;
+}
+
+function hasServerDefault(column) {
+  return Boolean(column.defaultValue) || column.isIdentity || column.isGenerated;
+}
+
+function insertDescription(table) {
+  return table.description ? `Insert shape for ${table.description}` : null;
+}
+
+function updateDescription(table) {
+  return table.description ? `Update shape for ${table.description}` : null;
+}
+
+function buildMetadata(tables) {
+  return Object.fromEntries(
+    tables.map((table) => [
+      table.name,
+      {
+        description: table.description,
+        primaryKey: table.primaryKey,
+        unique: table.uniqueConstraints,
+        foreignKeys: table.foreignKeys,
+        exclusionConstraints: table.exclusionConstraints,
+        constraints: table.constraints,
+        columns: Object.fromEntries(
+          table.columns.map((column) => [
+            column.name,
+            {
+              description: column.description,
+              nullable: column.nullable,
+              dataType: column.dataType,
+              udtSchema: column.udtSchema,
+              udtName: column.udtName,
+              domainSchema: column.domainSchema,
+              domainName: column.domainName,
+              default: column.defaultValue,
+              identity: column.isIdentity ? column.identityGeneration : null,
+              generated: column.isGenerated ? column.generationExpression : null,
+              primaryKey: column.isPrimaryKey,
+              checks: column.checkConstraints.map((constraint) => ({
+                name: constraint.name,
+                definition: constraint.definition,
+                description: constraint.description,
+              })),
+            },
+          ]),
+        ),
+      },
+    ]),
+  );
+}
+
 function toZodExpression(column) {
   if (isArrayColumn(column)) {
-    let expression = `z.array(${toZodExpression(toArrayElementColumn(column))})`;
+    let expression = applyArrayZodChecks(`z.array(${toZodExpression(toArrayElementColumn(column))})`, column);
 
     if (column.nullable) {
       expression += ".nullable()";
@@ -483,6 +765,12 @@ function toZodExpression(column) {
 }
 
 function baseZodExpression(column) {
+  const zodDirective = getZodDirective(column.description);
+
+  if (zodDirective) {
+    return zodDirective;
+  }
+
   const enumValues = getColumnEnumValues(column);
 
   if (enumValues.length > 0) {
@@ -506,6 +794,8 @@ function baseZodExpression(column) {
       return "z.unknown()";
     case "uuid":
       return "z.string().uuid()";
+    case "range":
+      return "z.string()";
     case "string":
       return "z.string()";
     default:
@@ -514,6 +804,10 @@ function baseZodExpression(column) {
 }
 
 function applyColumnZodChecks(expression, column) {
+  if (getZodDirective(column.description)) {
+    return expression;
+  }
+
   if (getColumnEnumValues(column).length > 0) {
     return expression;
   }
@@ -533,22 +827,41 @@ function applyColumnZodChecks(expression, column) {
 
 function applyStringZodChecks(expression, column) {
   const checks = collectStringLengthChecks(column);
+  const regexChecks = collectRegexChecks(column);
+  
+  let checkedExpression = applyStringFormatChecks(expression, column);
 
   if (checks.minimum !== undefined && checks.maximum !== undefined && checks.minimum === checks.maximum) {
-    return `${expression}.length(${checks.minimum})`;
+    checkedExpression += `.length(${checks.minimum})`;
+  } else {
+    if (checks.minimum !== undefined && checks.minimum > 0) {
+      checkedExpression += `.min(${checks.minimum})`;
+    }
+
+    if (checks.maximum !== undefined) {
+      checkedExpression += `.max(${checks.maximum})`;
+    }
   }
 
-  let checkedExpression = expression;
-
-  if (checks.minimum !== undefined && checks.minimum > 0) {
-    checkedExpression += `.min(${checks.minimum})`;
-  }
-
-  if (checks.maximum !== undefined) {
-    checkedExpression += `.max(${checks.maximum})`;
+  for (const regex of regexChecks) {
+    checkedExpression += `.regex(${toRegExpLiteral(regex.pattern, regex.flags)})`;
   }
 
   return checkedExpression;
+}
+
+function applyStringFormatChecks(expression, column) {
+  const comment = column.description ?? "";
+
+  if (/@(?:dbzod\s+)?format\s+email\b/i.test(comment)) {
+    return `${expression}.email()`;
+  }
+
+  if (/@(?:dbzod\s+)?format\s+(?:ip|inet)\b/i.test(comment) || column.udtName === "inet") {
+    return `${expression}.ip()`;
+  }
+
+  return expression;
 }
 
 function collectStringLengthChecks(column) {
@@ -580,6 +893,18 @@ function collectStringLengthChecks(column) {
   };
 }
 
+function collectRegexChecks(column) {
+  const regexes = [];
+
+  for (const constraint of column.checkConstraints) {
+    if (constraint.parsed.regex) {
+      regexes.push(constraint.parsed.regex);
+    }
+  }
+
+  return regexes;
+}
+
 function applyNumberZodChecks(expression, column) {
   const checks = collectNumberChecks(column);
   let checkedExpression = expression;
@@ -597,6 +922,42 @@ function applyNumberZodChecks(expression, column) {
   }
 
   return checkedExpression;
+}
+
+function applyArrayZodChecks(expression, column) {
+  const checks = collectArrayChecks(column);
+  let checkedExpression = expression;
+
+  if (checks.minimum !== undefined) {
+    checkedExpression += `.min(${checks.minimum})`;
+  }
+
+  if (checks.maximum !== undefined) {
+    checkedExpression += `.max(${checks.maximum})`;
+  }
+
+  return checkedExpression;
+}
+
+function collectArrayChecks(column) {
+  const checks = {};
+
+  for (const constraint of column.checkConstraints) {
+    const parsed = constraint.parsed;
+
+    if (parsed.arrayMinimum) {
+      setLengthMinimum(checks, parsed.arrayMinimum.value, parsed.arrayMinimum.inclusive);
+    }
+
+    if (parsed.arrayMaximum) {
+      setLengthMaximum(checks, parsed.arrayMaximum.value, parsed.arrayMaximum.inclusive);
+    }
+  }
+
+  return {
+    minimum: checks.lengthMinimum?.value,
+    maximum: checks.lengthMaximum?.value,
+  };
 }
 
 function collectNumberChecks(column) {
@@ -691,6 +1052,7 @@ function baseJsDocType(column) {
     case "json":
       return "unknown";
     case "uuid":
+    case "range":
     case "string":
       return "string";
     default:
@@ -705,6 +1067,9 @@ function parseColumnCheckConstraint(definition, columnName) {
   parseAllowedValues(expression, columnName, parsed);
   parseLengthComparisons(expression, columnName, parsed);
   parseNumericComparisons(expression, columnName, parsed);
+  parseArrayLengthComparisons(expression, columnName, parsed);
+  parseRegexChecks(expression, columnName, parsed);
+  parseNonEmptyChecks(expression, columnName, parsed);
 
   return parsed;
 }
@@ -771,6 +1136,51 @@ function parseNumericComparisons(expression, columnName, parsed) {
   }
 }
 
+function parseArrayLengthComparisons(expression, columnName, parsed) {
+  const columnRef = postgresColumnRefPattern(columnName);
+  const lengthCall = `array_length\\s*\\(\\s*${columnRef}\\s*,\\s*1\\s*\\)`;
+  const cardinalityCall = `cardinality\\s*\\(\\s*${columnRef}\\s*\\)`;
+  const arrayLengthCall = `(?:${lengthCall}|${cardinalityCall})`;
+  const leftPattern = new RegExp(`${arrayLengthCall}\\s*(>=|>|<=|<|=)\\s*${NUMERIC_VALUE_PATTERN}`, "gi");
+  const rightPattern = new RegExp(`${NUMERIC_VALUE_PATTERN}\\s*(>=|>|<=|<|=)\\s*${arrayLengthCall}`, "gi");
+
+  for (const match of expression.matchAll(leftPattern)) {
+    applyArrayLengthComparison(parsed, match[1], Number(match[2]), false);
+  }
+
+  for (const match of expression.matchAll(rightPattern)) {
+    applyArrayLengthComparison(parsed, match[2], Number(match[1]), true);
+  }
+}
+
+function parseRegexChecks(expression, columnName, parsed) {
+  const columnRef = postgresColumnRefPattern(columnName);
+  const pattern = new RegExp(`${columnRef}\\s*(~\\*|~)\\s*('(?:''|[^'])*')`, "i");
+  const match = expression.match(pattern);
+
+  if (!match) {
+    return;
+  }
+
+  const [regexPattern] = parseSqlStringLiterals(match[2]);
+
+  if (regexPattern && isSafeJavaScriptRegExp(regexPattern)) {
+    parsed.regex = {
+      pattern: regexPattern,
+      flags: match[1] === "~*" ? "i" : "",
+    };
+  }
+}
+
+function parseNonEmptyChecks(expression, columnName, parsed) {
+  const columnRef = postgresColumnRefPattern(columnName);
+  const pattern = new RegExp(`${columnRef}\\s*(?:<>|!=)\\s*''`, "i");
+
+  if (pattern.test(expression)) {
+    setLengthMinimum(parsed, 1, true);
+  }
+}
+
 function applyLengthComparison(parsed, operator, value, reversed) {
   if (!Number.isFinite(value)) {
     return;
@@ -819,6 +1229,35 @@ function applyNumericComparison(parsed, operator, value, reversed) {
       break;
     case "<":
       setMaximum(parsed, value, false);
+      break;
+    default:
+      break;
+  }
+}
+
+function applyArrayLengthComparison(parsed, operator, value, reversed) {
+  if (!Number.isFinite(value)) {
+    return;
+  }
+
+  const normalizedOperator = reversed ? reverseComparator(operator) : operator;
+
+  switch (normalizedOperator) {
+    case ">=":
+      setMinimum(parsed, value, true, "arrayMinimum");
+      break;
+    case ">":
+      setMinimum(parsed, value, false, "arrayMinimum");
+      break;
+    case "<=":
+      setMaximum(parsed, value, true, "arrayMaximum");
+      break;
+    case "<":
+      setMaximum(parsed, value, false, "arrayMaximum");
+      break;
+    case "=":
+      setMinimum(parsed, value, true, "arrayMinimum");
+      setMaximum(parsed, value, true, "arrayMaximum");
       break;
     default:
       break;
@@ -942,6 +1381,19 @@ function formatNumber(value) {
   return String(Number(value.toPrecision(15)));
 }
 
+function isSafeJavaScriptRegExp(pattern) {
+  try {
+    new RegExp(pattern);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function toRegExpLiteral(pattern, flags) {
+  return `new RegExp(${JSON.stringify(pattern)}, ${JSON.stringify(flags)})`;
+}
+
 const NUMERIC_VALUE_PATTERN = "\\(?\\s*([-+]?\\d+(?:\\.\\d+)?)\\s*\\)?";
 
 function normalizePostgresType(column) {
@@ -970,6 +1422,13 @@ function normalizePostgresType(column) {
       return "json";
     case "uuid":
       return "uuid";
+    case "int4range":
+    case "int8range":
+    case "numrange":
+    case "daterange":
+    case "tsrange":
+    case "tstzrange":
+      return "range";
     case "bpchar":
     case "char":
     case "varchar":
@@ -1055,6 +1514,26 @@ function toZodDescription(description) {
   }
 
   return `.describe(${JSON.stringify(description)})`;
+}
+
+function getZodDirective(description) {
+  if (!description) {
+    return null;
+  }
+
+  const match = String(description).match(/@(?:dbzod\s+)?zod\s+([^\r\n]+)/i);
+
+  if (!match) {
+    return null;
+  }
+
+  const expression = match[1].trim();
+
+  if (!/^z\.[a-zA-Z_$][\w$]*(?:\(|\.)/.test(expression)) {
+    return null;
+  }
+
+  return expression;
 }
 
 function filterTables(tables, options) {

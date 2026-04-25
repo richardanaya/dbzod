@@ -134,8 +134,12 @@ Filters can match table names like `users` or schema-qualified names like `publi
 For each table, `dbzod` generates:
 
 - A named Zod schema, like `usersSchema`
+- A row schema, like `usersRowSchema`
+- An insert schema, like `usersInsertSchema`
+- An update schema, like `usersUpdateSchema`
 - A JSDoc typedef, like `Users`
 - A `schemas` registry keyed by table name
+- A `metadata` export with keys, relationships, constraints, and column metadata
 
 Here is a small PostgreSQL schema:
 
@@ -184,7 +188,7 @@ import { z } from "zod";
  * @property {string | null} bio
  * @property {Date} created_at
  */
-export const usersSchema = z.object({
+export const usersRowSchema = z.object({
   id: z.number().int().gte(-2147483648).lte(2147483647),
   email: z.string().max(320).describe("Email address used for login."),
   username: z.string().min(3).max(30).describe("Public handle shown in the app."),
@@ -193,9 +197,38 @@ export const usersSchema = z.object({
   bio: z.string().nullable(),
   created_at: z.coerce.date(),
 }).describe("Application users.");
+export const usersSchema = usersRowSchema;
+
+export const usersInsertSchema = z.object({
+  id: z.number().int().gte(-2147483648).lte(2147483647),
+  email: z.string().max(320).describe("Email address used for login."),
+  username: z.string().min(3).max(30).describe("Public handle shown in the app."),
+  status: z.enum(["active", "disabled"]).describe("Whether the user can access the app."),
+  age: z.number().int().gte(13).lte(2147483647).nullable().optional(),
+  bio: z.string().nullable().optional(),
+  created_at: z.coerce.date().optional(),
+});
+
+export const usersUpdateSchema = z.object({
+  email: z.string().max(320).describe("Email address used for login.").optional(),
+  username: z.string().min(3).max(30).describe("Public handle shown in the app.").optional(),
+  status: z.enum(["active", "disabled"]).describe("Whether the user can access the app.").optional(),
+  age: z.number().int().gte(13).lte(2147483647).nullable().optional(),
+  bio: z.string().nullable().optional(),
+  created_at: z.coerce.date().optional(),
+});
 
 export const schemas = {
   users: usersSchema,
+};
+
+export const metadata = {
+  users: {
+    primaryKey: ["id"],
+    unique: [],
+    foreignKeys: [],
+    exclusionConstraints: [],
+  },
 };
 ```
 
@@ -203,15 +236,258 @@ export const schemas = {
 
 `dbzod` tries to make schemas match your real table definitions:
 
-- `NOT NULL` becomes required fields.
+- `NOT NULL` becomes required fields. Example column: `email text not null`.
+- Nullable columns become `.nullable()`. Example column: `bio text`.
+- `varchar(n)` becomes `.max(n)`. Example column: `email varchar(320)`.
+- `char(n)` becomes `.length(n)`. Example column: `sku char(12)`.
+- PostgreSQL enum types become `z.enum([...])`. Example column: `status user_status not null`.
+- Simple text enum checks like `status in ('draft', 'published')` become `z.enum([...])`. Example column: `status text check (status in ('draft', 'published'))`.
+- Simple range checks like `age >= 0` become `.gte(0)`. Example column: `age integer check (age >= 13)`.
+- Simple length checks like `char_length(name) <= 80` become `.max(80)`. Example column: `name text check (char_length(name) <= 80)`.
+- Table and column comments become JSDoc descriptions and Zod `.describe(...)` metadata. Example column comment: `comment on column users.email is 'Email address used for login.'`.
+- Defaults, identity columns, and generated columns shape `InsertSchema` and `UpdateSchema` output. Example column: `created_at timestamptz not null default now()`.
+- Primary keys, unique constraints, foreign keys, exclusion constraints, check constraints, and constraint comments are exported in `metadata`. Example column: `user_id integer references users(id)`.
+- PostgreSQL domains reuse their domain `CHECK` constraints in generated column schemas. Example column: `slug slug_text not null`.
+- Simple regex checks like `slug ~ '^[a-z0-9-]+$'` become `.regex(...)` when the PostgreSQL regex is also valid JavaScript regex. Example column: `slug text check (slug ~ '^[a-z0-9-]+$')`.
+- Non-empty checks like `name <> ''` become `.min(1)`. Example column: `name text check (name <> '')`.
+- Array length checks like `array_length(tags, 1) <= 5` become `z.array(...).max(5)`. Example column: `tags text[] check (array_length(tags, 1) <= 5)`.
+- Comment hints like `@format email` become `.email()` and `@format ip` becomes `.ip()`. Example column comment: `comment on column users.email is 'Login email. @format email'`.
+- Comment hints like `@zod z.object({ kind: z.string() })` can override the generated Zod expression for JSON or other custom columns. Example column comment: `comment on column events.payload is '@zod z.object({ kind: z.string() })'`.
+- PostgreSQL range types are preserved as string schemas and described in metadata. Example column: `available_during tstzrange`.
+
+## Metadata Conventions
+
+`dbzod` supports metadata from standard PostgreSQL definitions and a few optional comment hints.
+
+### Nullability
+
+```sql
+email text not null
+bio text
+```
+
+- `NOT NULL` columns are required in row schemas.
 - Nullable columns become `.nullable()`.
-- `varchar(n)` becomes `.max(n)`.
-- `char(n)` becomes `.length(n)`.
-- PostgreSQL enum types become `z.enum([...])`.
-- Simple text enum checks like `status in ('draft', 'published')` become `z.enum([...])`.
-- Simple range checks like `age >= 0` become `.gte(0)`.
-- Simple length checks like `char_length(name) <= 80` become `.max(80)`.
-- Table and column comments become JSDoc descriptions and Zod `.describe(...)` metadata.
+
+### String Lengths
+
+```sql
+email varchar(320)
+sku char(12)
+```
+
+- `varchar(n)` becomes `z.string().max(n)`.
+- `char(n)` becomes `z.string().length(n)`.
+
+### PostgreSQL Enums
+
+```sql
+create type user_status as enum ('active', 'disabled');
+
+status user_status not null
+```
+
+Generates:
+
+```js
+z.enum(["active", "disabled"])
+```
+
+### Check-Based Enums
+
+```sql
+status text check (status in ('draft', 'published'))
+kind text check (kind = any (array['physical'::text, 'digital'::text]))
+```
+
+These become `z.enum([...])` when the check is a simple single-column enum check.
+
+### Numeric Ranges
+
+```sql
+age integer check (age >= 13)
+price numeric(8, 2) check (price > 0 and price < 10000)
+```
+
+Simple single-column comparisons become Zod range checks:
+
+```js
+z.number().gte(13)
+z.number().gt(0).lt(10000)
+```
+
+`smallint` and `integer` also include their native PostgreSQL bounds.
+
+### Numeric Precision And Scale
+
+```sql
+price numeric(8, 2)
+```
+
+When safe to represent in JavaScript, `dbzod` derives a precision range and scale check:
+
+```js
+z.number().multipleOf(0.01)
+```
+
+### String Length Checks
+
+```sql
+username text check (char_length(username) >= 3)
+bio text check (length(bio) <= 500)
+```
+
+Supported functions:
+
+- `char_length(column)`
+- `character_length(column)`
+- `length(column)`
+
+These become `.min(...)`, `.max(...)`, or `.length(...)`.
+
+### Non-Empty Strings
+
+```sql
+name text check (name <> '')
+```
+
+Generates:
+
+```js
+z.string().min(1)
+```
+
+### Regex Checks
+
+```sql
+slug text check (slug ~ '^[a-z0-9-]+$')
+email text check (email ~* '^[^@]+@[^@]+$')
+```
+
+Simple PostgreSQL regex checks become `.regex(...)` when the pattern is also valid JavaScript regex.
+
+- `~` becomes a case-sensitive JavaScript regex.
+- `~*` becomes a case-insensitive JavaScript regex.
+
+### Array Length Checks
+
+```sql
+tags text[] check (array_length(tags, 1) <= 5)
+items text[] check (cardinality(items) >= 1)
+```
+
+Supported array length functions:
+
+- `array_length(column, 1)`
+- `cardinality(column)`
+
+These become `z.array(...).min(...)`, `.max(...)`, or `.length(...)`.
+
+### Domains
+
+```sql
+create domain slug_text as text check (VALUE ~ '^[a-z0-9-]+$');
+
+slug slug_text not null
+```
+
+Domain `CHECK` constraints are applied to columns that use the domain.
+
+### Table And Column Comments
+
+```sql
+comment on table users is 'Application users.';
+comment on column users.email is 'Email address used for login.';
+```
+
+Comments become:
+
+- JSDoc descriptions
+- Zod `.describe(...)` metadata
+- `metadata` export descriptions
+
+### Format Comment Hints
+
+Use comments to request extra Zod string formats:
+
+```sql
+comment on column users.email is 'Email address used for login. @format email';
+comment on column servers.ip_address is 'Public server address. @format ip';
+```
+
+Supported format hints:
+
+- `@format email` becomes `.email()`.
+- `@format ip` becomes `.ip()`.
+- `@format inet` becomes `.ip()`.
+- `@dbzod format email` also works.
+
+### Custom Zod Comment Hints
+
+Use `@zod` when PostgreSQL metadata is not enough, especially for `json` or `jsonb` columns:
+
+```sql
+comment on column events.payload is '@zod z.object({ kind: z.string() })';
+comment on column events.payload is '@dbzod zod z.object({ kind: z.string() })';
+```
+
+The expression must start with `z.`. When present, it overrides the generated base Zod expression for that column.
+
+### Defaults, Identity, And Generated Columns
+
+```sql
+id integer generated always as identity primary key
+created_at timestamptz not null default now()
+display_name text generated always as (first_name || ' ' || last_name) stored
+```
+
+These shape generated mutation schemas:
+
+- `RowSchema` represents selected database rows.
+- `InsertSchema` omits DB-owned `generated always` identity columns and generated columns.
+- `InsertSchema` makes default-backed columns optional.
+- `UpdateSchema` omits primary keys, identity columns, and generated columns.
+
+### Keys And Relationships
+
+```sql
+primary key (id)
+unique (email)
+foreign key (user_id) references users(id)
+```
+
+These are exported in `metadata`:
+
+```js
+metadata.posts.primaryKey
+metadata.users.unique
+metadata.posts.foreignKeys
+```
+
+### Exclusion Constraints
+
+```sql
+exclude using gist (room_id with =, during with &&)
+```
+
+Exclusion constraints are exported in `metadata.exclusionConstraints`.
+
+### Constraint Comments
+
+```sql
+comment on constraint users_email_key on users is 'Email addresses are unique.';
+```
+
+Constraint comments are included in the `metadata` export.
+
+### PostgreSQL Range Types
+
+```sql
+available_during tstzrange
+price_window numrange
+```
+
+Range columns are currently generated as strings and preserved in `metadata` with their PostgreSQL type information.
 
 ## Current Scope
 
