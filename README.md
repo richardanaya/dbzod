@@ -19,6 +19,8 @@ Generate schemas from your database:
 
 ```sh
 DATABASE_URL="postgres://user:password@localhost:5432/app" npx database-validator-generator generate
+# Or using the shorthand:
+DATABASE_URL="postgres://user:password@localhost:5432/app" npx dbvg generate
 ```
 
 This creates:
@@ -40,6 +42,8 @@ Or run without installing the CLI first:
 
 ```sh
 npx database-validator-generator generate --connection "postgres://user:password@localhost:5432/app"
+# Or:
+npx dbvg generate --connection "postgres://user:password@localhost:5432/app"
 ```
 
 The generated file imports `zod`, so your app should have `zod` installed.
@@ -52,12 +56,14 @@ Generate schemas:
 
 ```sh
 database-validator-generator generate
+# Or: dbvg generate
 ```
 
 List tables:
 
 ```sh
 database-validator-generator list tables
+# Or: dbvg list tables
 ```
 
 Show help:
@@ -66,6 +72,7 @@ Show help:
 database-validator-generator --help
 database-validator-generator generate --help
 database-validator-generator list tables --help
+# Or: dbvg --help, dbvg generate --help, dbvg list tables --help
 ```
 
 ## Connecting To Postgres
@@ -74,18 +81,21 @@ Use `DATABASE_URL`:
 
 ```sh
 DATABASE_URL="postgres://user:password@localhost:5432/app" database-validator-generator generate
+# Or: DATABASE_URL="..." dbvg generate
 ```
 
 Or pass the connection string directly:
 
 ```sh
 database-validator-generator generate --connection "postgres://user:password@localhost:5432/app"
+# Or: dbvg generate --connection "..."
 ```
 
 For hosted databases that require SSL, use the connection string your provider gives you:
 
 ```sh
 database-validator-generator generate --connection "postgresql://user:password@host/db?sslmode=require"
+# Or: dbvg generate --connection "postgresql://..."
 ```
 
 ## Choosing A Schema
@@ -97,6 +107,7 @@ Use a different PostgreSQL schema:
 ```sh
 database-validator-generator generate --schema app
 database-validator-generator list tables --schema app
+# Or: dbvg generate --schema app, dbvg list tables --schema app
 ```
 
 ## Choosing An Output File
@@ -107,6 +118,7 @@ Write somewhere else:
 
 ```sh
 database-validator-generator generate --out src/db/schemas.mjs
+# Or: dbvg generate --out src/db/schemas.mjs
 ```
 
 Check whether a generated file is stale without writing it:
@@ -114,6 +126,7 @@ Check whether a generated file is stale without writing it:
 ```sh
 database-validator-generator generate --check
 database-validator-generator generate --out src/db/schemas.mjs --check
+# Or: dbvg generate --check, dbvg generate --out src/db/schemas.mjs --check
 ```
 
 `--check` exits nonzero if the output file does not exist or differs from what `database-validator-generator` would generate. This is useful in CI.
@@ -124,6 +137,7 @@ Generate one table:
 
 ```sh
 database-validator-generator generate --table users
+# Or: dbvg generate --table users
 ```
 
 Generate multiple tables:
@@ -131,6 +145,7 @@ Generate multiple tables:
 ```sh
 database-validator-generator generate --table users --table posts
 database-validator-generator generate --table users,posts
+# Or: dbvg generate --table users --table posts, etc.
 ```
 
 Use glob-style patterns:
@@ -138,6 +153,7 @@ Use glob-style patterns:
 ```sh
 database-validator-generator generate --table "app_*"
 database-validator-generator generate --table "*" --exclude-table "audit_*"
+# Or: dbvg generate --table "app_*", etc.
 ```
 
 Filters can match table names like `users` or schema-qualified names like `public.users`.
@@ -179,6 +195,7 @@ Run:
 
 ```sh
 database-validator-generator generate
+# Or: dbvg generate
 ```
 
 `database-validator-generator` writes `schemas.mjs` like this:
