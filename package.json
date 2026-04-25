@@ -1,6 +1,6 @@
 {
   "name": "database-validator-generator",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Generate Zod schemas and JSDoc typedefs from database metadata.",
   "type": "module",
   "files": [

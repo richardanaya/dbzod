@@ -221,6 +221,7 @@ async function introspectPostgres(connectionString, schemaName) {
           c.identity_generation,
           c.is_generated,
           c.generation_expression,
+          t.table_type as table_type,
           obj_description(cls.oid, 'pg_class') as table_description,
           col_description(cls.oid, att.attnum) as column_description,
           exists (
@@ -251,7 +252,7 @@ async function introspectPostgres(connectionString, schemaName) {
           and att.attnum > 0
           and not att.attisdropped
         where c.table_schema = $1
-          and t.table_type = 'BASE TABLE'
+          and t.table_type in ('BASE TABLE', 'VIEW')
         order by c.table_name, c.ordinal_position
       `,
       [schemaName],
@@ -417,7 +418,7 @@ async function listPostgresTables(connectionString, schemaName) {
         select table_name
         from information_schema.tables
         where table_schema = $1
-          and table_type = 'BASE TABLE'
+          and table_type in ('BASE TABLE', 'VIEW')
         order by table_name
       `,
       [schemaName],
@@ -437,6 +438,7 @@ function groupColumnsByTable(rows) {
       tableMap.set(row.table_name, {
         name: row.table_name,
         description: row.table_description,
+        isView: row.table_type === 'VIEW',
         primaryKey: [],
         uniqueConstraints: [],
         foreignKeys: [],
@@ -627,20 +629,24 @@ function generateSchemas(tables, schemaName) {
 
     lines.push(`})${toZodDescription(table.description)};`);
     lines.push(`export const ${schemaNameForTable} = ${rowSchemaName};`);
-    lines.push(`export const ${insertSchemaName} = z.object({`);
 
-    for (const column of table.columns.filter(isInsertableColumn)) {
-      lines.push(`  ${quotePropertyName(column.name)}: ${toInsertZodExpression(column)},`);
+    if (!table.isView) {
+      lines.push(`export const ${insertSchemaName} = z.object({`);
+
+      for (const column of table.columns.filter(isInsertableColumn)) {
+        lines.push(`  ${quotePropertyName(column.name)}: ${toInsertZodExpression(column)},`);
+      }
+
+      lines.push(`})${toZodDescription(insertDescription(table))};`);
+      lines.push(`export const ${updateSchemaName} = z.object({`);
+
+      for (const column of table.columns.filter(isUpdatableColumn)) {
+        lines.push(`  ${quotePropertyName(column.name)}: ${toOptionalZodExpression(column)},`);
+      }
+
+      lines.push(`})${toZodDescription(updateDescription(table))};`);
     }
 
-    lines.push(`})${toZodDescription(insertDescription(table))};`);
-    lines.push(`export const ${updateSchemaName} = z.object({`);
-
-    for (const column of table.columns.filter(isUpdatableColumn)) {
-      lines.push(`  ${quotePropertyName(column.name)}: ${toOptionalZodExpression(column)},`);
-    }
-
-    lines.push(`})${toZodDescription(updateDescription(table))};`);
     lines.push("");
   }
 
@@ -662,7 +668,7 @@ function generateSchemas(tables, schemaName) {
   lines.push("");
   lines.push("export const insertSchemas = {");
 
-  for (const table of tables) {
+  for (const table of tables.filter((t) => !t.isView)) {
     lines.push(`  ${quotePropertyName(table.name)}: ${toCamelCase(table.name)}InsertSchema,`);
   }
 
@@ -670,7 +676,7 @@ function generateSchemas(tables, schemaName) {
   lines.push("");
   lines.push("export const updateSchemas = {");
 
-  for (const table of tables) {
+  for (const table of tables.filter((t) => !t.isView)) {
     lines.push(`  ${quotePropertyName(table.name)}: ${toCamelCase(table.name)}UpdateSchema,`);
   }
 
@@ -720,6 +726,7 @@ function buildMetadata(tables) {
       table.name,
       {
         description: table.description,
+        view: table.isView || undefined,
         primaryKey: table.primaryKey,
         unique: table.uniqueConstraints,
         foreignKeys: table.foreignKeys,
@@ -1627,7 +1634,7 @@ async function main() {
     const tables = filterTables(allTables, options);
 
     if ((options.tables.length > 0 || options.excludeTables.length > 0) && tables.length === 0) {
-      throw new Error("No tables matched the generate filters.");
+      throw new Error("No relations matched the generate filters.");
     }
 
     const output = generateSchemas(tables, options.schema);
@@ -1640,7 +1647,7 @@ async function main() {
 
     await writeFile(options.out, output, "utf8");
 
-    process.stdout.write(`Generated ${options.out} with ${tables.length} table schema${tables.length === 1 ? "" : "s"}.\n`);
+    process.stdout.write(`Generated ${options.out} with ${tables.length} relation schema${tables.length === 1 ? "" : "s"}.\n`);
     return;
   }
 
