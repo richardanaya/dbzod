@@ -7,14 +7,14 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 test("top-level help lists the narrow command surface", async () => {
-  const { stdout } = await execFileAsync("node", ["./dbzod.js", "--help"]);
+  const { stdout } = await execFileAsync("node", ["./database-validator-generator.js", "--help"]);
 
-  assert.match(stdout, /dbzod generate \[options\]/);
-  assert.match(stdout, /dbzod list tables \[options\]/);
+  assert.match(stdout, /database-validator-generator generate \[options\]/);
+  assert.match(stdout, /database-validator-generator list tables \[options\]/);
 });
 
 test("generate help documents check mode and table filters", async () => {
-  const { stdout } = await execFileAsync("node", ["./dbzod.js", "generate", "--help"]);
+  const { stdout } = await execFileAsync("node", ["./database-validator-generator.js", "generate", "--help"]);
 
   assert.match(stdout, /--check\s+Exit nonzero if the output file is stale\./);
   assert.match(stdout, /--table <pattern>/);
@@ -23,14 +23,14 @@ test("generate help documents check mode and table filters", async () => {
 
 test("list tables rejects generate-only options", async () => {
   await assert.rejects(
-    execFileAsync("node", ["./dbzod.js", "list", "tables", "--check"]),
-    /--check is only supported by dbzod generate/,
+    execFileAsync("node", ["./database-validator-generator.js", "list", "tables", "--check"]),
+    /--check is only supported by database-validator-generator generate/,
   );
 });
 
 test("generate requires a connection string before doing database work", async () => {
   await assert.rejects(
-    execFileAsync("node", ["./dbzod.js", "generate"], { env: { ...process.env, DATABASE_URL: "" } }),
+    execFileAsync("node", ["./database-validator-generator.js", "generate"], { env: { ...process.env, DATABASE_URL: "" } }),
     /Missing PostgreSQL connection string/,
   );
 });
@@ -39,5 +39,5 @@ test("package metadata targets Zod v4", async () => {
   const packageJson = JSON.parse(await readFile("./package.json", "utf8"));
 
   assert.equal(packageJson.peerDependencies.zod, "^4.0.0");
-  assert.deepEqual(packageJson.files, ["dbzod.js", "dbzod.test.js", "README.md", "LICENSE"]);
+  assert.deepEqual(packageJson.files, ["database-validator-generator.js", "database-validator-generator.test.js", "README.md", "LICENSE"]);
 });

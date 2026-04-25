@@ -1,24 +1,24 @@
-# dbzod
+# database-validator-generator
 
 Generate Zod schemas and JSDoc types from your PostgreSQL database.
 
-`dbzod` is a CLI. Point it at a Postgres database and it writes a `schemas.mjs` file for your tables.
+`database-validator-generator` (also callable as `dbvg`) is a CLI. Point it at a Postgres database and it writes a `schemas.mjs` file for your tables.
 
-`dbzod` is intentionally narrow: no ORM, no migrations, no query builder, and no database abstraction. It generates best-effort Zod v4 contracts from PostgreSQL metadata.
+`database-validator-generator` is intentionally narrow: no ORM, no migrations, no query builder, and no database abstraction. It generates best-effort Zod v4 contracts from PostgreSQL metadata.
 
 ## Quick Start
 
 Install the CLI and Zod:
 
 ```sh
-npm install --save-dev dbzod
+npm install --save-dev database-validator-generator
 npm install zod
 ```
 
 Generate schemas from your database:
 
 ```sh
-DATABASE_URL="postgres://user:password@localhost:5432/app" npx dbzod generate
+DATABASE_URL="postgres://user:password@localhost:5432/app" npx database-validator-generator generate
 ```
 
 This creates:
@@ -39,33 +39,33 @@ schemas.users.parse({ id: 1, email: "person@example.com" });
 Or run without installing the CLI first:
 
 ```sh
-npx dbzod generate --connection "postgres://user:password@localhost:5432/app"
+npx database-validator-generator generate --connection "postgres://user:password@localhost:5432/app"
 ```
 
 The generated file imports `zod`, so your app should have `zod` installed.
 
-`dbzod` targets Zod v4.
+`database-validator-generator` targets Zod v4.
 
 ## Commands
 
 Generate schemas:
 
 ```sh
-dbzod generate
+database-validator-generator generate
 ```
 
 List tables:
 
 ```sh
-dbzod list tables
+database-validator-generator list tables
 ```
 
 Show help:
 
 ```sh
-dbzod --help
-dbzod generate --help
-dbzod list tables --help
+database-validator-generator --help
+database-validator-generator generate --help
+database-validator-generator list tables --help
 ```
 
 ## Connecting To Postgres
@@ -73,78 +73,78 @@ dbzod list tables --help
 Use `DATABASE_URL`:
 
 ```sh
-DATABASE_URL="postgres://user:password@localhost:5432/app" dbzod generate
+DATABASE_URL="postgres://user:password@localhost:5432/app" database-validator-generator generate
 ```
 
 Or pass the connection string directly:
 
 ```sh
-dbzod generate --connection "postgres://user:password@localhost:5432/app"
+database-validator-generator generate --connection "postgres://user:password@localhost:5432/app"
 ```
 
 For hosted databases that require SSL, use the connection string your provider gives you:
 
 ```sh
-dbzod generate --connection "postgresql://user:password@host/db?sslmode=require"
+database-validator-generator generate --connection "postgresql://user:password@host/db?sslmode=require"
 ```
 
 ## Choosing A Schema
 
-By default, `dbzod` reads from the `public` schema.
+By default, `database-validator-generator` reads from the `public` schema.
 
 Use a different PostgreSQL schema:
 
 ```sh
-dbzod generate --schema app
-dbzod list tables --schema app
+database-validator-generator generate --schema app
+database-validator-generator list tables --schema app
 ```
 
 ## Choosing An Output File
 
-By default, `dbzod generate` writes `schemas.mjs`.
+By default, `database-validator-generator generate` writes `schemas.mjs`.
 
 Write somewhere else:
 
 ```sh
-dbzod generate --out src/db/schemas.mjs
+database-validator-generator generate --out src/db/schemas.mjs
 ```
 
 Check whether a generated file is stale without writing it:
 
 ```sh
-dbzod generate --check
-dbzod generate --out src/db/schemas.mjs --check
+database-validator-generator generate --check
+database-validator-generator generate --out src/db/schemas.mjs --check
 ```
 
-`--check` exits nonzero if the output file does not exist or differs from what `dbzod` would generate. This is useful in CI.
+`--check` exits nonzero if the output file does not exist or differs from what `database-validator-generator` would generate. This is useful in CI.
 
 ## Generating Only Some Tables
 
 Generate one table:
 
 ```sh
-dbzod generate --table users
+database-validator-generator generate --table users
 ```
 
 Generate multiple tables:
 
 ```sh
-dbzod generate --table users --table posts
-dbzod generate --table users,posts
+database-validator-generator generate --table users --table posts
+database-validator-generator generate --table users,posts
 ```
 
 Use glob-style patterns:
 
 ```sh
-dbzod generate --table "app_*"
-dbzod generate --table "*" --exclude-table "audit_*"
+database-validator-generator generate --table "app_*"
+database-validator-generator generate --table "*" --exclude-table "audit_*"
 ```
 
 Filters can match table names like `users` or schema-qualified names like `public.users`.
 
 ## What Gets Generated
 
-For each table, `dbzod` generates:
+For each table, `database-validator-generator` generates:
 
 - A named Zod schema, like `usersSchema`
 - A row schema, like `usersRowSchema`
@@ -178,14 +178,14 @@ comment on column users.status is 'Whether the user can access the app.';
 Run:
 
 ```sh
-dbzod generate
+database-validator-generator generate
 ```
 
-`dbzod` writes `schemas.mjs` like this:
+`database-validator-generator` writes `schemas.mjs` like this:
 
 ```js
 /* eslint-disable */
-// Generated by dbzod. Do not edit by hand.
+// Generated by database-validator-generator. Do not edit by hand.
 // PostgreSQL schema: public
 
 import { z } from "zod";
@@ -247,7 +247,7 @@ export const metadata = {
 
 ## PostgreSQL Metadata Support
 
-`dbzod` tries to make schemas match your real table definitions:
+`database-validator-generator` tries to make schemas match your real table definitions:
 
 Complex PostgreSQL constraints are always preserved in the exported `metadata`, but only simple single-column checks are translated into Zod validation.
 
@@ -272,7 +272,7 @@ Complex PostgreSQL constraints are always preserved in the exported `metadata`, 
 
 ## Metadata Conventions
 
-`dbzod` supports metadata from standard PostgreSQL definitions and a few optional comment hints.
+`database-validator-generator` supports metadata from standard PostgreSQL definitions and a few optional comment hints.
 
 ### Nullability
 
@@ -339,7 +339,7 @@ z.number().gt(0).lt(10000)
 price numeric(8, 2)
 ```
 
-When safe to represent in JavaScript, `dbzod` derives a precision range and scale check:
+When safe to represent in JavaScript, `database-validator-generator` derives a precision range and scale check:
 
 ```js
 z.number().multipleOf(0.01)
@@ -435,7 +435,7 @@ Supported format hints:
 - `@format email` becomes `.email()`.
 - `@format ip` becomes `.ip()`.
 - `@format inet` becomes `.ip()`.
-- `@dbzod format email` also works.
+- `@database-validator-generator format email` also works.
 
 ### Custom Zod Comment Hints
 
@@ -443,7 +443,7 @@ Use `@zod` when PostgreSQL metadata is not enough, especially for `json` or `jso
 
 ```sql
 comment on column events.payload is '@zod z.object({ kind: z.string() })';
-comment on column events.payload is '@dbzod zod z.object({ kind: z.string() })';
+comment on column events.payload is '@database-validator-generator zod z.object({ kind: z.string() })';
 ```
 
 The expression must start with `z.`. When present, it overrides the generated base Zod expression for that column.
@@ -508,6 +508,6 @@ Range columns are currently generated as strings and preserved in `metadata` wit
 
 ## Current Scope
 
-`dbzod` supports PostgreSQL first. Other databases are not supported yet.
+`database-validator-generator` supports PostgreSQL first. Other databases are not supported yet.
 
-`dbzod` is not an ORM, migration tool, or query builder. It reads PostgreSQL metadata and writes generated Zod v4 contract files.
+`database-validator-generator` is not an ORM, migration tool, or query builder. It reads PostgreSQL metadata and writes generated Zod v4 contract files.

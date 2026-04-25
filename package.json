@@ -1,20 +1,21 @@
 {
-  "name": "dbzod",
+  "name": "database-validator-generator",
   "version": "0.0.0",
-  "description": "Generate Zod schemas and JSDoc typedefs from a PostgreSQL database.",
+  "description": "Generate Zod schemas and JSDoc typedefs from database metadata.",
   "type": "module",
   "files": [
-    "dbzod.js",
-    "dbzod.test.js",
+    "database-validator-generator.js",
+    "database-validator-generator.test.js",
     "README.md",
     "LICENSE"
   ],
   "bin": {
-    "dbzod": "dbzod.js"
+    "database-validator-generator": "database-validator-generator.js",
+    "dbvg": "database-validator-generator.js"
   },
   "scripts": {
-    "start": "node ./dbzod.js",
-    "check": "node --check ./dbzod.js",
+    "start": "node ./database-validator-generator.js",
+    "check": "node --check ./database-validator-generator.js",
     "test": "node --test",
     "prepack": "npm run check && npm test"
   },
