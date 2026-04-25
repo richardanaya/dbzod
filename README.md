@@ -4,6 +4,8 @@ Generate Zod schemas and JSDoc types from your PostgreSQL database.
 
 `dbzod` is a CLI. Point it at a Postgres database and it writes a `schemas.mjs` file for your tables.
 
+`dbzod` is intentionally narrow: no ORM, no migrations, no query builder, and no database abstraction. It generates best-effort Zod v4 contracts from PostgreSQL metadata.
+
 ## Quick Start
 
 Install the CLI and Zod:
@@ -41,6 +43,8 @@ npx dbzod generate --connection "postgres://user:password@localhost:5432/app"
 ```
 
 The generated file imports `zod`, so your app should have `zod` installed.
+
+`dbzod` targets Zod v4.
 
 ## Commands
 
@@ -104,6 +108,15 @@ Write somewhere else:
 ```sh
 dbzod generate --out src/db/schemas.mjs
 ```
+
+Check whether a generated file is stale without writing it:
+
+```sh
+dbzod generate --check
+dbzod generate --out src/db/schemas.mjs --check
+```
+
+`--check` exits nonzero if the output file does not exist or differs from what `dbzod` would generate. This is useful in CI.
 
 ## Generating Only Some Tables
 
@@ -235,6 +248,8 @@ export const metadata = {
 ## PostgreSQL Metadata Support
 
 `dbzod` tries to make schemas match your real table definitions:
+
+Complex PostgreSQL constraints are always preserved in the exported `metadata`, but only simple single-column checks are translated into Zod validation.
 
 - `NOT NULL` becomes required fields. Example column: `email text not null`.
 - Nullable columns become `.nullable()`. Example column: `bio text`.
@@ -433,6 +448,8 @@ comment on column events.payload is '@dbzod zod z.object({ kind: z.string() })';
 
 The expression must start with `z.`. When present, it overrides the generated base Zod expression for that column.
 
+Only use `@zod` hints in schemas you trust. The hint is copied into generated JavaScript.
+
 ### Defaults, Identity, And Generated Columns
 
 ```sql
@@ -492,3 +509,5 @@ Range columns are currently generated as strings and preserved in `metadata` wit
 ## Current Scope
 
 `dbzod` supports PostgreSQL first. Other databases are not supported yet.
+
+`dbzod` is not an ORM, migration tool, or query builder. It reads PostgreSQL metadata and writes generated Zod v4 contract files.

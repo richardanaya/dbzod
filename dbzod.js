@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import process from "node:process";
 import pg from "pg";
 
@@ -36,6 +36,7 @@ Options:
   -c, --connection <url>  PostgreSQL connection string. Defaults to DATABASE_URL.
   -s, --schema <schema>   PostgreSQL schema to inspect. Defaults to public.
   -o, --out <path>        Output file path. Defaults to schemas.mjs.
+  --check                 Exit nonzero if the output file is stale.
   -t, --table <pattern>   Include table name or glob pattern. Repeatable or comma-separated.
   --exclude-table <pat>   Exclude table name or glob pattern. Repeatable or comma-separated.
   -h, --help              Show this help text.
@@ -104,6 +105,7 @@ function parseOptions(argv, { allowOut }) {
 
   if (allowOut) {
     options.out = "schemas.mjs";
+    options.check = false;
     options.tables = [];
     options.excludeTables = [];
   }
@@ -135,6 +137,15 @@ function parseOptions(argv, { allowOut }) {
 
       options.out = readOptionValue(argv, index, arg);
       index += 1;
+      continue;
+    }
+
+    if (arg === "--check") {
+      if (!allowOut) {
+        throw new Error(`${arg} is only supported by dbzod generate`);
+      }
+
+      options.check = true;
       continue;
     }
 
@@ -1579,6 +1590,24 @@ function tableFilterPatternToRegExp(filter) {
   return new RegExp(`^${pattern}$`);
 }
 
+async function checkGeneratedFile(path, expectedOutput) {
+  let existingOutput;
+
+  try {
+    existingOutput = await readFile(path, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new Error(`${path} does not exist. Run dbzod generate first.`);
+    }
+
+    throw error;
+  }
+
+  if (existingOutput !== expectedOutput) {
+    throw new Error(`${path} is stale. Run dbzod generate to update it.`);
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
 
@@ -1600,6 +1629,12 @@ async function main() {
     }
 
     const output = generateSchemas(tables, options.schema);
+
+    if (options.check) {
+      await checkGeneratedFile(options.out, output);
+      process.stdout.write(`${options.out} is up to date.\n`);
+      return;
+    }
 
     await writeFile(options.out, output, "utf8");
 
